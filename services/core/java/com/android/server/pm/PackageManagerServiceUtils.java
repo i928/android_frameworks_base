@@ -92,6 +92,7 @@ import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.content.InstallLocationUtils;
 import com.android.internal.content.NativeLibraryHelper;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.telephony.TelephonyPermissions;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.FastPrintWriter;
@@ -1372,6 +1373,12 @@ public class PackageManagerServiceUtils {
         final String cacheName = FORCE_PACKAGE_PARSED_CACHE_ENABLED ? "debug"
                 : PackagePartitions.FINGERPRINT;
 
+        // An OTA changes the fingerprint and normally throws the whole cache away, so every
+        // /data app is re-parsed on the first boot. /data entries stay valid as long as the
+        // parser is the same, so carry them over when Build.ID and SDK match.
+        final boolean migrated = !new File(cacheBaseDir, cacheName).exists()
+                && migrateDataAppCache(cacheBaseDir, cacheName);
+
         // Reconcile cache directories, keeping only what we'd actually use.
         for (File cacheDir : FileUtils.listFilesOrEmpty(cacheBaseDir)) {
             if (Objects.equals(cacheName, cacheDir.getName())) {
@@ -1399,7 +1406,9 @@ public class PackageManagerServiceUtils {
         // NOTE: When no BUILD_NUMBER is set by the build system, it defaults to a build
         // that starts with "eng." to signify that this is an engineering build and not
         // destined for release.
-        if (isUserDebugBuild && incrementalVersion.startsWith("eng.")) {
+        writeCacheParserStamp(cacheDir);
+
+        if (!migrated && isUserDebugBuild && incrementalVersion.startsWith("eng.")) {
             // Heuristic: If the /system directory has been modified recently due to an "adb sync"
             // or a regular make, then blow away the cache. Note that mtimes are *NOT* reliable
             // in general and should not be used for production changes. In this specific case,
@@ -1414,6 +1423,72 @@ public class PackageManagerServiceUtils {
         }
 
         return cacheDir;
+    }
+
+    private static final String CACHE_PARSER_STAMP = ".parser_stamp";
+    // <file>-<flags>-<path hash>; /data apps scan with flags 0. Unparseable keys are dropped.
+    private static final java.util.regex.Pattern CACHE_KEY =
+            java.util.regex.Pattern.compile("^.+-(\\d+)--?\\d+$");
+
+    private static String cacheParserStamp() {
+        return Build.ID + "/" + Build.VERSION.SDK_INT_FULL;
+    }
+
+    private static void writeCacheParserStamp(File cacheDir) {
+        try {
+            FileUtils.stringToFile(new File(cacheDir, CACHE_PARSER_STAMP), cacheParserStamp());
+        } catch (IOException e) {
+            Slog.w(TAG, "Failed to write package cache stamp", e);
+        }
+    }
+
+    /**
+     * On an OTA, rename the previous cache dir to {@code cacheName} keeping only entries parsed
+     * from /data (no PARSE_IS_SYSTEM_DIR). System entries must go: /system files have a fixed
+     * mtime, so the mtime check would accept stale results. Returns true if migrated.
+     */
+    private static boolean migrateDataAppCache(File cacheBaseDir, String cacheName) {
+        final String stamp = cacheParserStamp();
+        for (File oldDir : FileUtils.listFilesOrEmpty(cacheBaseDir)) {
+            if (cacheName.equals(oldDir.getName()) || !oldDir.isDirectory()) continue;
+            final File stampFile = new File(oldDir, CACHE_PARSER_STAMP);
+            String oldStamp = null;
+            try {
+                oldStamp = IoUtils.readFileAsString(stampFile.getAbsolutePath()).trim();
+            } catch (IOException ignored) {
+            }
+            if (!stamp.equals(oldStamp)) continue;
+
+            int kept = 0, dropped = 0;
+            for (File f : FileUtils.listFilesOrEmpty(oldDir)) {
+                if (f.getName().equals(CACHE_PARSER_STAMP)) continue;
+                final java.util.regex.Matcher m = CACHE_KEY.matcher(f.getName());
+                boolean keep = false;
+                if (m.matches()) {
+                    try {
+                        keep = (Integer.parseInt(m.group(1))
+                                & ParsingPackageUtils.PARSE_IS_SYSTEM_DIR) == 0;
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+                if (keep) {
+                    kept++;
+                } else {
+                    f.delete();
+                    dropped++;
+                }
+            }
+            final File newDir = new File(cacheBaseDir, cacheName);
+            FileUtils.deleteContentsAndDir(newDir);
+            if (!oldDir.renameTo(newDir)) {
+                Slog.w(TAG, "Package cache migration rename failed");
+                return false;
+            }
+            Slog.i(TAG, "Kept " + kept + " /data package cache entries across upgrade ("
+                    + dropped + " system entries dropped)");
+            return true;
+        }
+        return false;
     }
 
     /**
