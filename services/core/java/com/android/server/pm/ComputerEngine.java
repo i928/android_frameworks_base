@@ -1500,8 +1500,11 @@ public class ComputerEngine implements Computer {
         // Allowlist the following apps:
         // * com.android.vending - microG Companion
         // * com.google.android.gms - microG Services
+        // * app.revanced.android.gms - ReVanced GmsCore (renamed to avoid colliding
+        //   with a real Play Services install on dirty flashes)
         if (!p.getPackageName().equals("com.android.vending") &&
-                !p.getPackageName().equals("com.google.android.gms")) {
+                !p.getPackageName().equals("com.google.android.gms") &&
+                !p.getPackageName().equals("app.revanced.android.gms")) {
             return false;
         }
 
