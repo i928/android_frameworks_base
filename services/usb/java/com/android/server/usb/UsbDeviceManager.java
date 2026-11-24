@@ -2396,6 +2396,12 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
         private static final int ENUMERATION_TIME_OUT_MS = 2000;
 
         /**
+         * A UVC gadget function stays pulled down until DeviceAsWebcam opens its V4L2 node, so
+         * the host can only enumerate after that app has (cold-)started. Give it longer.
+         */
+        private static final int UVC_ENUMERATION_TIME_OUT_MS = 12000;
+
+        /**
          * Gadget HAL fully qualified instance name for registering for ServiceNotification.
          */
         protected static final String GADGET_HAL_FQ_NAME =
@@ -2627,7 +2633,10 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
                     if (mConnected) {
                         // Only queue timeout of enumeration when the USB is connected
                         sendMessageDelayed(MSG_FUNCTION_SWITCH_TIMEOUT, chargingFunctions,
-                                SET_FUNCTIONS_TIMEOUT_MS + ENUMERATION_TIME_OUT_MS);
+                                SET_FUNCTIONS_TIMEOUT_MS
+                                        + ((config & UsbManager.FUNCTION_UVC) != 0
+                                                ? UVC_ENUMERATION_TIME_OUT_MS
+                                                : ENUMERATION_TIME_OUT_MS));
                     }
                     if (DEBUG) Slog.d(TAG, "timeout message queued");
                 } catch (Exception e) {//RemoteException e) {
